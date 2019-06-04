@@ -1,3 +1,6 @@
 (executable
   (name acamlslife)
-  (libraries str))
+  (libraries
+    str
+    graphics
+  ))
