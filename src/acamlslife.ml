@@ -6,6 +6,11 @@ type state =
 | Walking
 | Dead
 
+type world_action =
+| Live
+| Divide
+| Die
+
 
 let _NEXT_ID = ref 1
 
@@ -16,7 +21,9 @@ let get_next_id () =
 
 
 
-let normal m n =
+let pi = 4.0 *. atan 1.0
+
+let normal ?(m=1.0) n =
   let sum = ref 0.0 in
   for _ = 1 to n do
     sum := !sum +. (Random.float m)
@@ -24,7 +31,7 @@ let normal m n =
   !sum /. (float_of_int n)
 
 let normal_modifier n factor dev =
-  factor +. (factor *. dev *. ((normal 1.0 n) -. 0.5))
+  factor +. (factor *. dev *. ((normal n) -. 0.5))
 
 module Matrix = struct
   let init m n f =
@@ -68,7 +75,8 @@ end
 
 
 class tile = object (_self)
-  val mutable food = 10.0
+  val mutable food = 10.0 *. (Random.float 1.0) ** 100.0
+  (*val mutable food = 10.0*)
 
   val growth_rate = 0.1
   val max_feed_factor = 2.0
@@ -90,13 +98,16 @@ class tile = object (_self)
 end
 
 
-class terrain size_x size_y = object (_self)
+class terrain size_x size_y = object (self)
   val width = size_x
   val height = size_y
   val mutable tiles: tile array array = [| |]
 
   initializer
     tiles <- Array.init width (fun _ -> Array.init height (fun _ -> new tile))
+
+  method get_sizef () =
+    (float_of_int width, float_of_int height)
 
   method get_tile (x, y) =
     Array.get (Array.get tiles x) y
@@ -109,19 +120,32 @@ class terrain size_x size_y = object (_self)
         tile#timeslice tick
       done
     done
+
+  method draw () =
+    let f i j =
+      let tile = self#get_tile (i, j) in
+      (0, 0, (int_of_float (tile#get_food () *. 10.0)) mod 256)
+    in
+    Graph.draw_grid width height f
+
 end
 
 
-class creature (size:float) = object (self)
+class creature (parent:int) (size:float) (energy:float) = object (self)
   val id = get_next_id ()
+  val parent = parent
+
+  (* State *)
   val mutable x = 0.0
   val mutable y = 0.0
+  val mutable lifespan = 0
   val mutable state = Eating
   val mutable size = size
-  val mutable energy = 0.0
-  val mutable lifespan = 0
-  val mutable size_integral = 0.0
+  val mutable energy = energy
+  val mutable direction = 0.0
+  val mutable speed = 0.0
 
+  (* Parameters *)
   val metabolism_rest = 0.1
   val metabolism_eating = 0.10
   val metabolism_walking = 0.3
@@ -130,11 +154,21 @@ class creature (size:float) = object (self)
   val growth_factor = 0.2
   val energy_capacity_factor = 2.0
 
+  (* Stats *)
+  val mutable size_integral = 0.0
+
+
+  method get_id () =
+    id
+
   method get_pos () =
     (int_of_float x, int_of_float y)
 
   method get_size () =
     size
+
+  method get_energy () =
+    energy
 
   method max_energy () =
     size *. energy_capacity_factor
@@ -146,11 +180,34 @@ class creature (size:float) = object (self)
     energy <- energy +. (actual_amount *. digest_efficiency);
     self#metabolize metabolism_eating
 
+  method walk (terrain:terrain) =
+    let r = Random.float 1.0 in
+    if r < 0.05 then begin
+      direction <- direction +. (normal ~m:(pi *. 0.25) 2);
+      ()
+    end;
+
+    let (ox, oy) = (x, y) in
+    let (width, height) = terrain#get_sizef () in
+    let nx = sin direction +. x in
+    let ny = cos direction +. y in
+
+    if nx < 0.0 then
+      x <- nx +. width
+    else
+      x <- mod_float nx width;
+
+    if ny < 0.0 then
+      y <- ny +. height
+    else
+      y <- mod_float ny height;
+
+    Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id ox oy nx ny;
+
   method rest () =
     self#metabolize metabolism_rest
 
   method metabolize metabolism =
-
     let used = size *. metabolism in
     if used <= energy then
       energy <- energy -. used
@@ -169,20 +226,28 @@ class creature (size:float) = object (self)
 
   method select_action () =
     let r = Random.float 1.0 in
-    if energy < 0.1 *. self#max_energy () then
+    (*if energy < 0.1 *. self#max_energy () then
       Eating
+    else*)
+    if r < 0.05 then
+      Walking
     else if r < 0.8 then
       Eating
     else
       Resting
 
+  method fitness () =
+    size_integral /. (float_of_int lifespan) *. 10.0
 
-  method timeslice (tile:tile) =
+
+  method timeslice (terrain:terrain) =
+    let tile = terrain#get_tile (self#get_pos ()) in
     begin
       lifespan <- lifespan + 1;
       match state with
       | Eating -> self#eat tile
       | Resting -> self#rest ()
+      | Walking -> self#walk terrain
       | _ -> self#rest ()
     end;
 
@@ -190,21 +255,32 @@ class creature (size:float) = object (self)
 
     size_integral <- size_integral +. size;
 
+    (*
     Graph.add_point 0 (truncate size);
     Graph.add_point 1 (truncate (tile#get_food ()));
-    Graph.add_point 2 (truncate (size_integral /. (float_of_int lifespan) *. 10.0));
+    Graph.add_point 2 (truncate (self#fitness ()));
     Graph.add_point 3 (truncate energy);
+    *)
 
     Printf.printf "creature %d is size %f and energy is %f; tile is %f\n" id size energy (tile#get_food ());
-    if size < 0.5 then
+    if size > 4.0 && energy > 4.0 && Random.float 1.0 >= 0.95 then
+      Divide
+    else if size < 0.5 then
       self#die ()
     else
-      true
+      Live
+
+  method divide () =
+    size <- size /. 2.0;
+    energy <- energy /. 2.0;
+    let creat = new creature id size energy in
+    Printf.printf "creature %d has divided into %d\n" id (creat#get_id ());
+    creat
 
   method die () =
     Printf.printf "creature %d has died\n" id;
     state <- Dead;
-    false
+    Die
 
 end
 
@@ -221,15 +297,34 @@ class world size_x size_y = object (self)
 
   method timeslice tick =
     terrain#timeslice tick;
-    creatures <- List.filter begin fun creat ->
-      let tile = terrain#get_tile (creat#get_pos ()) in
-      let has_died = creat#timeslice tile in
+    creatures <- List.fold_left begin fun acc creat ->
+      let action = creat#timeslice terrain in
       size_integral <- size_integral +. creat#get_size ();
-      has_died
-    end creatures;
+      match action with
+      | Die -> acc
+      | Live -> creat :: acc
+      | Divide -> (total_creatures <- total_creatures + 1;
+                   creat :: creat#divide () :: acc)
+    end [] creatures;
 
-  method spawn size =
-    let creat = new creature size in
+    let numcreats = List.length creatures |> float_of_int in
+    let (sumsize, sumfit, sumeng) = List.fold_left begin fun (sumsize, sumfit, sumeng) creat ->
+      (sumsize +. creat#get_size (), sumfit +. creat#fitness (), sumeng +. creat#get_energy ())
+    end (0.0, 0.0, 0.0) creatures in
+    Graph.add_point 0 (truncate sumsize);
+    Graph.add_point 1 (truncate ((terrain#get_tile (0, 0))#get_food ()));
+    Graph.add_point 2 (truncate (sumfit /. numcreats));
+    Graph.add_point 3 (truncate (sumeng /. numcreats));
+    Graph.add_point 4 (truncate numcreats);
+    
+
+  method divide (creat:creature) =
+    let newcreat = creat#divide () in
+    creatures <- newcreat :: creatures;
+    total_creatures <- total_creatures + 1
+
+  method spawn parent size =
+    let creat = new creature parent size 0.0 in
     creatures <- creat :: creatures;
     total_creatures <- total_creatures + 1
 
@@ -242,10 +337,11 @@ class world size_x size_y = object (self)
     let average = size_integral /. (float_of_int creats) /. (float_of_int tick) in
     Printf.printf "Total Creatures: %d\n" total_creatures;
     Printf.printf "Average Size: %f\n" average;
-    Printf.printf "Total ticks: %d\n" tick
+    Printf.printf "Total ticks: %d\n" tick;
+    Printf.printf "%!"
 
   method run () =
-    self#spawn 1.0;
+    self#spawn 0 1.0;
 
     while self#creature_count () > 0 && tick < 400 do
       tick <- tick + 1;
@@ -281,6 +377,14 @@ class world size_x size_y = object (self)
     Matrix.print (Matrix.mul (Matrix.ident 10 10) (Matrix.rand 10 10));
     *)
 
+  method draw () =
+    terrain#draw ();
+    List.iter begin fun creat ->
+      let (x, y) = creat#get_pos () in
+      let size = creat#get_size () in
+      Graph.draw_circle x y (int_of_float size)
+    end creatures
+
 end
 
 
@@ -289,6 +393,10 @@ let () =
   Random.self_init ();
   let world = new world 100 100 in
   world#run ();
-  Graph.display_graph Graph.draw_data;
-  world#summary ()
+  world#summary ();
+  let draw () =
+    world#draw ();
+    Graph.draw_data ()
+  in
+  Graph.display_graph draw
 

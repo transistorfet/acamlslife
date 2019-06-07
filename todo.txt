@@ -1,0 +1,5 @@
+
+* can you make the fitness function determine chance of dividing
+* can you make the parameters be a vector or matrix
+* add neural decision making (with back propogation this time?)
+

@@ -15,19 +15,41 @@ let draw_data () =
   end graph_data
 
 
-let draw_line x y =
-  Graphics.lineto x y
 
-let rec event_loop n =
+
+let zoom = 6
+let border = 15
+
+let draw_grid x y f =
+  let _width = Graphics.size_x () in
+  let height = Graphics.size_y () in
+  for i = 0 to (x - 1) do
+    for j = 0 to (y - 1) do
+      let (r, g, b) = f i j in
+      let x = border + (i * zoom) in
+      let y = (height - border) - (j * zoom) in
+      Graphics.set_color (Graphics.rgb r g b);
+      Graphics.fill_rect x y zoom zoom
+    done
+  done
+
+let draw_circle x y r =
+  let height = Graphics.size_y () in
+  let ax = border + (x * zoom) in
+  let ay = (height - border) - (y * zoom) in
+  Graphics.set_color Graphics.red;
+  Graphics.fill_circle ax ay r
+
+let rec event_loop () =
   let _ = Graphics.wait_next_event [Graphics.Poll] in
   (*Unix.sleep 1;*)
-  event_loop n
+  event_loop ()
 
 let display_graph draw_func =
   Graphics.open_graph "";
   Graphics.moveto 0 0;
   draw_func ();
-  try event_loop 0
+  try event_loop ()
   with Graphics.Graphic_failure _ -> Printf.printf "Exiting...\n"
 
 
