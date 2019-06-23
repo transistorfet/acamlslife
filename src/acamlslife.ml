@@ -32,6 +32,10 @@ let normal ?(m=1.0) n =
 let normal_modifier n factor dev =
   factor +. (factor *. dev *. ((normal n) -. 0.5))
 
+let rand_diff () =
+  1.0 -. Random.float 2.0
+
+
 let wrap_to_float num width =
   if num < 0.0 then
     num +. width
@@ -234,23 +238,39 @@ class terrain size_x size_y = object (self)
         l := tile#get_food () :: !l
       done
     done;
-    (* [| Array.of_list !l |] *)
-    let m = Owl.Mat.empty 9 1 in
-    List.iteri (fun i x -> Owl.Mat.set m i 0 x) !l;
-    m
+    !l
 
 end
 
 
-let num_inputs = 9
-let num_hidden1 = 20
-let num_outputs = 4
+let num_inputs = 10
+let num_outputs = 6
+
+let network = [ num_inputs; 20; 40; num_outputs ]
+
+let create_mat ?f:(f=rand_diff) x y =
+  Owl.Mat.(empty x y |> map (fun _ -> f ()))
+
+let generate_layer inp out =
+  (create_mat out inp, create_mat out 1)
+
+let generate_layers () =
+  let layers = ref [] in
+  for i = 0 to (List.length network - 2) do
+    let inp = List.nth network i in
+    let out = List.nth network (i + 1) in
+    layers := !layers @ [ generate_layer inp out ]
+  done;
+  !layers
+
+let sigmoid_mat a =
+  Owl.Mat.map (fun x -> 1.0 /. (1.0 +. exp (-1.0 *. x))) a
+
+let sin_mat a =
+  Owl.Mat.map (fun x -> sin x) a
 
 class creature_brain = object (self)
-  val mutable input_fc = Owl.Mat.(empty num_hidden1 num_inputs |> map (fun _ -> 1.0 -. Random.float 2.0))
-  val mutable input_b = Owl.Mat.zeros num_hidden1 1
-  val mutable hidden1_fc = Owl.Mat.(empty num_outputs num_hidden1 |> map (fun _ -> 1.0 -. Random.float 2.0))
-  val mutable hidden1_b = Owl.Mat.zeros num_outputs 1
+  val mutable layers = generate_layers ()
 
   method infer x =
     (*
@@ -259,18 +279,19 @@ class creature_brain = object (self)
     Matrix.print r2;
     *)
 
-    let sigmoid a =
-      Owl.Mat.map (fun x -> 1.0 /. (1.0 +. exp (-1.0 *. x))) a
-    in
+    let (layer1w, layer1b) = List.nth layers 0 in
+    let (layer2w, layer2b) = List.nth layers 1 in
+    let (layer3w, layer3b) = List.nth layers 2 in
 
-    let r1 = Owl.Mat.(input_fc *@ x + input_b) |> Owl.Mat.map (fun x -> sin x) in
-    let r2 = Owl.Mat.(hidden1_fc *@ r1 + hidden1_b) |> sigmoid in
-    Owl.Mat.print r2;
-    r2
+    let r1 = Owl.Mat.(layer1w *@ x + layer1b) |> sin_mat in
+    let r2 = Owl.Mat.(layer2w *@ r1 + layer2b) |> sigmoid_mat in
+    let r3 = Owl.Mat.(layer3w *@ r2 + layer3b) |> sigmoid_mat in
+    Owl.Mat.print r3;
+    r3
 
   method clone () =
     let newbrain = Oo.copy self in
-    if Random.float 1.0 < 0.1 then begin
+    if Random.float 1.0 < 0.4 then begin
       newbrain#alter ()
     end;
     newbrain
@@ -279,10 +300,7 @@ class creature_brain = object (self)
     let modify x =
       x +. ((Random.float 2.0) -. 1.0) ** 3.0
     in
-    input_fc <- Owl.Mat.map modify input_fc;
-    input_b <- Owl.Mat.map modify input_b;
-    hidden1_fc <- Owl.Mat.map modify hidden1_fc;
-    hidden1_b <- Owl.Mat.map modify hidden1_b;
+    layers <- List.map (fun (w, b) -> Owl.Mat.( (map modify w, map modify b) )) layers
 
 end
 
@@ -299,7 +317,7 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
   val mutable size = size
   val mutable energy = energy
   val mutable direction = 0.0
-  val mutable speed = 0.0
+  val mutable speed = 1.0
   val mutable brain =
     match brain with
     | Some brain -> brain
@@ -350,7 +368,6 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
     self#metabolize metabolism_eating
 
   method walk (terrain:terrain) =
-    let speed = 1.0 in
     let (width, height) = terrain#get_sizef () in
     let nx = wrap_to_float ((speed *. cos direction) +. x) width in
     let ny = wrap_to_float ((speed *. sin direction) +. y) height in
@@ -378,14 +395,26 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
       ()
     end
 
+  method get_inputs_vector (terrain:terrain) =
+    let m = Owl.Mat.empty num_inputs 1 in
+    List.iteri (fun i x -> Owl.Mat.set m i 0 x) (terrain#get_inputs (self#get_pos ()));
+    Owl.Mat.set m 9 0 energy;
+    m
+
   method select_action (terrain:terrain) =
-    let x = terrain#get_inputs (self#get_pos ()) in
+    let x = self#get_inputs_vector terrain in
     let r = brain#infer x in
 
-    if Owl.Mat.get r 0 0 > 0.2 then
+    let (eat, walk, rest, turnl, turnr, sp) = Owl.Mat.( (get r 0 0, get r 1 0, get r 2 0, get r 3 0, get r 4 0, get r 5 0) ) in
+    if eat > walk && eat > rest && eat > 0.2 then
       Eating
-    else if Owl.Mat.get r 1 0 > 0.4 then begin
-      direction <- direction +. (normal ~m:(pi *. 0.25) 2);
+    else if walk > rest && walk > 0.4 then begin
+      (*direction <- direction +. (normal ~m:(pi *. 0.25) 2);*)
+      if turnl > turnr && turnl > 0.5 then
+        direction <- direction +. 0.1
+      else if turnr > 0.5 then
+        direction <- direction +. 0.1;
+      speed <- sp *. 2.0;
       Walking
     end
     else
@@ -570,7 +599,7 @@ class world size_x size_y = object (self)
       creat#move (Random.float width) (Random.float height)
     done;
 
-    while self#creature_count () > 0 && tick < 4000 do
+    while self#creature_count () > 0 (*&& tick < 4000*) do
       tick <- tick + 1;
       if tick mod 10 == 0 then begin
         Printf.printf "Tick: %d\n%!" tick
@@ -621,7 +650,9 @@ class world size_x size_y = object (self)
     Matrix.print (Matrix.mul (Matrix.ident 10 10) m);
     *)
 
+    (*
     ignore Owl.(Mat.((uniform 10 10) * (eye 10) |> print));
+    *)
 end
 
 
