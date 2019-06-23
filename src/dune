@@ -3,4 +3,5 @@
   (libraries
     str
     graphics
+    owl
   ))

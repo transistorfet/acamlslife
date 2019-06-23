@@ -1,5 +1,4 @@
 
-
 type state =
 | Resting
 | Eating
@@ -33,6 +32,19 @@ let normal ?(m=1.0) n =
 let normal_modifier n factor dev =
   factor +. (factor *. dev *. ((normal n) -. 0.5))
 
+let wrap_to_float num width =
+  if num < 0.0 then
+    num +. width
+  else
+    mod_float num width
+
+let wrap_to num width =
+  if num < 0 then
+    num + width
+  else
+    num mod width
+
+
 module Matrix = struct
   let init m n f =
     let mat = Array.make_matrix m n 0.0 in
@@ -43,11 +55,32 @@ module Matrix = struct
     done;
     mat
 
-  let rand m n =
-    init m n (fun _ _ -> Random.float 1.0)
+  let rand ?(b=1.0) m n =
+    init m n (fun _ _ -> Random.float b)
 
   let ident m n =
     init m n (fun i j -> if i == j then 1.0 else 0.0)
+
+  let zeros m n =
+    init m n (fun _ _ -> 0.0)
+
+
+  let apply f m =
+    let rows = Array.length m in
+    let columns = (Array.length (Array.get m 0)) in
+    let z = Array.make_matrix rows columns 0.0 in
+    for i = 0 to rows - 1 do
+      for j = 0 to columns - 1 do
+        z.(i).(j) <- f i j m.(i).(j)
+      done
+    done;
+    z
+
+  let add x y =
+    let apply_add i j v =
+      v +. y.(i).(j)
+    in
+    apply apply_add x
 
   let mul x y =
     let x0 = Array.length x
@@ -62,25 +95,78 @@ module Matrix = struct
       done
     done;
     z
-    
+
   let print m =
-    for i = 0 to (Array.length m) - 1 do
-      for j = 0 to (Array.length (Array.get m i)) - 1 do
-        Printf.printf "%f " (Array.get (Array.get m i) j)
+    let rows = Array.length m in
+    let columns = (Array.length (Array.get m 0)) in
+    for i = 0 to rows - 1 do
+      for j = 0 to columns - 1 do
+        Printf.printf "%f " m.(i).(j)
       done;
       Printf.printf "\n"
-    done
+    done;
+    Printf.printf "\n"
+
+  let sigmoid m =
+    let apply_sigmoid _ _ x =
+      1.0 /. (1.0 +. exp (-1.0 *. x))
+    in
+    apply apply_sigmoid m
+
+end
+
+class stat_collector = object (self)
+  val mutable next_value = 0.0
+  val mutable value = 0.0
+  val mutable diff = 0.0
+  val mutable sum = 0.0
+
+  val mutable last_value = 0.0
+  val mutable last_diff = 0.0
+  val mutable minimum = 0.0
+  val mutable maximum = 0.0
+
+  method get_value () = value
+  method get_diff () = diff
+  method get_sum () = sum
+  method get_max () = maximum
+  method get_min () = minimum
+
+  method add v =
+    next_value <- next_value +. v
+
+  method avg_and_calc d =
+    next_value <- next_value /. d;
+    self#calculate ()
+
+  method collect v =
+    next_value <- v;
+    self#calculate ()
+
+  method calculate () =
+    last_diff <- diff;
+    diff <- next_value -. last_value;
+    sum <- sum +. next_value;
+    last_value <- value;
+    value <- next_value;
+    next_value <- 0.0;
+    minimum <- min minimum next_value;
+    maximum <- max maximum next_value;
+
 end
 
 
 
 class tile = object (_self)
-  val mutable food = 10.0 *. (Random.float 1.0) ** 100.0
+  val mutable food = 10.0 *. (Random.float 1.0) ** 10.0
   (*val mutable food = 10.0*)
 
-  val growth_rate = 0.1
+  val growth_rate = 0.01
   val max_feed_factor = 2.0
-  val max_capacity = 40.0
+  val max_capacity = (Random.float 1.0) ** 3.0 *. 40.0
+
+  initializer
+    food <- max_capacity
 
   method feed amount =
     let actual_amount = min amount (food /. max_feed_factor) in
@@ -89,11 +175,15 @@ class tile = object (_self)
 
   method timeslice tick =
     let rate = normal_modifier 2 growth_rate 0.5 in
-    let newfood = food +. food *. rate *. (1.0 +. 1.0 *. sin (float_of_int tick)) +. Random.float 0.2 in
+    let newfood = food +. food *. rate *. (1.0 +. 1.0 *. sin (float_of_int tick)) +. Random.float 0.1 in
     food <- min max_capacity newfood
 
   method get_food () =
     food
+
+  method get_max_capacity () =
+    (*max_capacity*)
+    40.0
 
 end
 
@@ -101,6 +191,7 @@ end
 class terrain size_x size_y = object (self)
   val width = size_x
   val height = size_y
+  val mutable total_food = 0.0
   val mutable tiles: tile array array = [| |]
 
   initializer
@@ -109,29 +200,94 @@ class terrain size_x size_y = object (self)
   method get_sizef () =
     (float_of_int width, float_of_int height)
 
+  method get_total_food () =
+    total_food
+
   method get_tile (x, y) =
     Array.get (Array.get tiles x) y
 
   method timeslice tick =
+    total_food <- 0.0;
     for i = 0 to (Array.length tiles) - 1 do
       let subtiles = Array.get tiles i in
       for j = 0 to (Array.length subtiles) - 1 do
         let tile = Array.get subtiles j in
+        total_food <- total_food +. tile#get_food ();
         tile#timeslice tick
       done
     done
 
   method draw () =
+    Graph.clear_grid 100 100;
     let f i j =
       let tile = self#get_tile (i, j) in
-      (0, 0, (int_of_float (tile#get_food () *. 10.0)) mod 256)
+      let food = (int_of_float (tile#get_food () /. tile#get_max_capacity () *. 255.0)) in
+      (0, 0, food)
     in
     Graph.draw_grid width height f
+
+  method get_inputs (x, y) =
+    let l = ref [] in
+    for i = x - 1 to x + 1 do
+      for j = y - 1 to y + 1 do
+        let tile = self#get_tile (wrap_to i width, wrap_to j height) in
+        l := tile#get_food () :: !l
+      done
+    done;
+    (* [| Array.of_list !l |] *)
+    let m = Owl.Mat.empty 9 1 in
+    List.iteri (fun i x -> Owl.Mat.set m i 0 x) !l;
+    m
 
 end
 
 
-class creature (parent:int) (size:float) (energy:float) = object (self)
+let num_inputs = 9
+let num_hidden1 = 20
+let num_outputs = 4
+
+class creature_brain = object (self)
+  val mutable input_fc = Owl.Mat.(empty num_hidden1 num_inputs |> map (fun _ -> 1.0 -. Random.float 2.0))
+  val mutable input_b = Owl.Mat.zeros num_hidden1 1
+  val mutable hidden1_fc = Owl.Mat.(empty num_outputs num_hidden1 |> map (fun _ -> 1.0 -. Random.float 2.0))
+  val mutable hidden1_b = Owl.Mat.zeros num_outputs 1
+
+  method infer x =
+    (*
+    let r1 = Matrix.sigmoid (Matrix.mul input_fc x |> Matrix.add input_b) in
+    let r2 = Matrix.sigmoid (Matrix.mul hidden1_fc r1 |> Matrix.add hidden1_b) in
+    Matrix.print r2;
+    *)
+
+    let sigmoid a =
+      Owl.Mat.map (fun x -> 1.0 /. (1.0 +. exp (-1.0 *. x))) a
+    in
+
+    let r1 = Owl.Mat.(input_fc *@ x + input_b) |> Owl.Mat.map (fun x -> sin x) in
+    let r2 = Owl.Mat.(hidden1_fc *@ r1 + hidden1_b) |> sigmoid in
+    Owl.Mat.print r2;
+    r2
+
+  method clone () =
+    let newbrain = Oo.copy self in
+    if Random.float 1.0 < 0.1 then begin
+      newbrain#alter ()
+    end;
+    newbrain
+
+  method alter () =
+    let modify x =
+      x +. ((Random.float 2.0) -. 1.0) ** 3.0
+    in
+    input_fc <- Owl.Mat.map modify input_fc;
+    input_b <- Owl.Mat.map modify input_b;
+    hidden1_fc <- Owl.Mat.map modify hidden1_fc;
+    hidden1_b <- Owl.Mat.map modify hidden1_b;
+
+end
+
+
+class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:float) = object (self)
   val id = get_next_id ()
   val parent = parent
 
@@ -144,18 +300,23 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
   val mutable energy = energy
   val mutable direction = 0.0
   val mutable speed = 0.0
+  val mutable brain =
+    match brain with
+    | Some brain -> brain
+    | None -> new creature_brain
 
   (* Parameters *)
-  val metabolism_rest = 0.1
-  val metabolism_eating = 0.10
+  val metabolism_rest = 0.08
+  val metabolism_eating = 0.15
   val metabolism_walking = 0.3
   val digest_efficiency = 1.0
-  val feed_factor = 0.2
+  val feed_factor = 0.4
   val growth_factor = 0.2
-  val energy_capacity_factor = 2.0
+  val energy_capacity_factor = 10.0
 
   (* Stats *)
-  val mutable size_integral = 0.0
+  val mutable total_eaten = 0.0
+  val mutable divisions = 0
 
 
   method get_id () =
@@ -163,6 +324,13 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
 
   method get_pos () =
     (int_of_float x, int_of_float y)
+
+  method get_posf () =
+    (x, y)
+
+  method move nx ny =
+    x <- nx;
+    y <- ny;
 
   method get_size () =
     size
@@ -177,32 +345,18 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
     let factor = normal_modifier 2 feed_factor 1.0 in
     let max_amount = min (factor *. size) (self#max_energy () -. energy) in
     let actual_amount = tile#feed max_amount in
+    total_eaten <- total_eaten +. actual_amount;
     energy <- energy +. (actual_amount *. digest_efficiency);
     self#metabolize metabolism_eating
 
   method walk (terrain:terrain) =
-    let r = Random.float 1.0 in
-    if r < 0.05 then begin
-      direction <- direction +. (normal ~m:(pi *. 0.25) 2);
-      ()
-    end;
-
-    let (ox, oy) = (x, y) in
+    let speed = 1.0 in
     let (width, height) = terrain#get_sizef () in
-    let nx = sin direction +. x in
-    let ny = cos direction +. y in
-
-    if nx < 0.0 then
-      x <- nx +. width
-    else
-      x <- mod_float nx width;
-
-    if ny < 0.0 then
-      y <- ny +. height
-    else
-      y <- mod_float ny height;
-
-    Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id ox oy nx ny;
+    let nx = wrap_to_float ((speed *. cos direction) +. x) width in
+    let ny = wrap_to_float ((speed *. sin direction) +. y) height in
+    Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id x y nx ny;
+    x <- nx;
+    y <- ny
 
   method rest () =
     self#metabolize metabolism_rest
@@ -224,23 +378,45 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
       ()
     end
 
-  method select_action () =
-    let r = Random.float 1.0 in
-    (*if energy < 0.1 *. self#max_energy () then
+  method select_action (terrain:terrain) =
+    let x = terrain#get_inputs (self#get_pos ()) in
+    let r = brain#infer x in
+
+    if Owl.Mat.get r 0 0 > 0.2 then
       Eating
-    else*)
-    if r < 0.05 then
+    else if Owl.Mat.get r 1 0 > 0.4 then begin
+      direction <- direction +. (normal ~m:(pi *. 0.25) 2);
+      Walking
+    end
+    else
+      Resting
+
+    (*
+    let r = Random.float 1.0 in
+    if r < 0.1 then begin
+      direction <- direction +. (normal ~m:(pi *. 0.25) 2);
+      ()
+    end;
+
+    let r = Random.float 1.0 in
+    if r < 0.1 then
       Walking
     else if r < 0.8 then
       Eating
     else
       Resting
+    *)
+
 
   method fitness () =
-    size_integral /. (float_of_int lifespan) *. 10.0
+    if lifespan <= 0 then
+      0.0
+    else
+      total_eaten /. (float_of_int lifespan)
+      (* (total_eaten /. (float_of_int lifespan)) *. (float_of_int divisions) *)
 
 
-  method timeslice (terrain:terrain) =
+  method timeslice (terrain:terrain) (avg_fitness:float) =
     let tile = terrain#get_tile (self#get_pos ()) in
     begin
       lifespan <- lifespan + 1;
@@ -251,9 +427,7 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
       | _ -> self#rest ()
     end;
 
-    state <- self#select_action ();
-
-    size_integral <- size_integral +. size;
+    state <- self#select_action terrain;
 
     (*
     Graph.add_point 0 (truncate size);
@@ -262,8 +436,9 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
     Graph.add_point 3 (truncate energy);
     *)
 
-    Printf.printf "creature %d is size %f and energy is %f; tile is %f\n" id size energy (tile#get_food ());
-    if size > 4.0 && energy > 4.0 && Random.float 1.0 >= 0.95 then
+    Printf.printf "creature %d is size %f and energy is %f; tile is %f; fitness is %f/%f\n" id size energy (tile#get_food ()) (self#fitness ()) avg_fitness;
+    if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && self#fitness () > avg_fitness then
+    (*if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && Random.float 1.0 >= 0.95 then*)
       Divide
     else if size < 0.5 then
       self#die ()
@@ -271,9 +446,11 @@ class creature (parent:int) (size:float) (energy:float) = object (self)
       Live
 
   method divide () =
+    divisions <- divisions + 1;
     size <- size /. 2.0;
     energy <- energy /. 2.0;
-    let creat = new creature id size energy in
+    total_eaten <- 0.0;
+    let creat = new creature ~brain:brain id size energy in
     Printf.printf "creature %d has divided into %d\n" id (creat#get_id ());
     creat
 
@@ -293,30 +470,67 @@ class world size_x size_y = object (self)
 
 
   val mutable size_integral = 0.0
+  val mutable population = new stat_collector
+  val mutable sum_size = new stat_collector
+  val mutable sum_energy = new stat_collector
+  val mutable sum_fitness = new stat_collector
+  val mutable sum_creat_food = new stat_collector
 
 
   method timeslice tick =
     terrain#timeslice tick;
     creatures <- List.fold_left begin fun acc creat ->
-      let action = creat#timeslice terrain in
+      let action = creat#timeslice terrain (sum_fitness#get_value ()) in
       size_integral <- size_integral +. creat#get_size ();
       match action with
       | Die -> acc
       | Live -> creat :: acc
-      | Divide -> (total_creatures <- total_creatures + 1;
-                   creat :: creat#divide () :: acc)
+      | Divide -> begin
+          let newcreat = creat#divide () in
+          total_creatures <- total_creatures + 1;
+
+          let (x, y) = creat#get_posf () in
+          let distance = creat#get_size () +. newcreat#get_size () in
+          let direction = Random.float (pi *. 2.0) in
+          let nx = wrap_to_float ((distance *. cos direction) +. x) (float_of_int size_x) in
+          let ny = wrap_to_float ((distance *. sin direction) +. y) (float_of_int size_y) in
+          Printf.printf "%f %f\n%!" nx ny;
+          newcreat#move nx ny;
+          creat :: newcreat :: acc
+        end
     end [] creatures;
 
-    let numcreats = List.length creatures |> float_of_int in
-    let (sumsize, sumfit, sumeng) = List.fold_left begin fun (sumsize, sumfit, sumeng) creat ->
-      (sumsize +. creat#get_size (), sumfit +. creat#fitness (), sumeng +. creat#get_energy ())
-    end (0.0, 0.0, 0.0) creatures in
-    Graph.add_point 0 (truncate sumsize);
-    Graph.add_point 1 (truncate ((terrain#get_tile (0, 0))#get_food ()));
-    Graph.add_point 2 (truncate (sumfit /. numcreats));
-    Graph.add_point 3 (truncate (sumeng /. numcreats));
-    Graph.add_point 4 (truncate numcreats);
-    
+    List.iter begin fun creat ->
+      creat#get_size () |> sum_size#add;
+      creat#get_energy () |> sum_energy#add;
+      creat#fitness () |> sum_fitness#add;
+      (terrain#get_tile (creat#get_pos ()))#get_food () |> sum_creat_food#add;
+    end creatures;
+
+    let numcreats = List.length creatures in
+    let numcreatsf = float_of_int numcreats in
+
+    sum_size#calculate ();
+    sum_energy#avg_and_calc numcreatsf;
+    sum_fitness#avg_and_calc numcreatsf;
+    sum_creat_food#avg_and_calc numcreatsf;
+    population#collect numcreatsf;
+
+    Graph.add_point 0 (sum_size#get_value () /. 4.0 |> truncate);
+    Graph.add_point 1 (terrain#get_total_food () /. 5000.0 |> truncate);
+    Graph.add_point 2 (sum_fitness#get_value () *. 50.0 |> truncate);
+    Graph.add_point 3 (sum_energy#get_value () |> truncate);
+    Graph.add_point 4 (truncate numcreatsf);
+    Graph.add_point 5 (sum_creat_food#get_value () |> truncate);
+
+    Graph.print (Printf.sprintf "Tick: %d" tick);
+    Graph.print (Printf.sprintf "Total Births: %d" total_creatures);
+    Graph.print (Printf.sprintf "Total Deaths: %d" (total_creatures - int_of_float (population#get_value ())));
+    Graph.print (Printf.sprintf "Population: %d" (population#get_value () |> int_of_float));
+    Graph.print (Printf.sprintf "d/dt Population: %d" (population#get_diff () |> int_of_float));
+    Graph.print (Printf.sprintf "d/dt Size: %f" (sum_size#get_diff ()));
+    Graph.print (Printf.sprintf "Avg Size: %f" (sum_size#get_value () /. numcreatsf));
+
 
   method divide (creat:creature) =
     let newcreat = creat#divide () in
@@ -324,12 +538,21 @@ class world size_x size_y = object (self)
     total_creatures <- total_creatures + 1
 
   method spawn parent size =
-    let creat = new creature parent size 0.0 in
+    let creat = new creature parent size 1.0 in
     creatures <- creat :: creatures;
-    total_creatures <- total_creatures + 1
+    total_creatures <- total_creatures + 1;
+    creat
 
   method creature_count () =
     List.length creatures
+
+  method draw () =
+    terrain#draw ();
+    List.iter begin fun creat ->
+      let (x, y) = creat#get_pos () in
+      let size = creat#get_size () in
+      Graph.draw_circle x y (int_of_float size)
+    end creatures
 
   method summary () =
     let creats = List.length creatures in
@@ -341,11 +564,27 @@ class world size_x size_y = object (self)
     Printf.printf "%!"
 
   method run () =
-    self#spawn 0 1.0;
+    for _ = 1 to 500 do
+      let creat = self#spawn 0 2.0 in
+      let (width, height) = terrain#get_sizef () in
+      creat#move (Random.float width) (Random.float height)
+    done;
 
-    while self#creature_count () > 0 && tick < 400 do
+    while self#creature_count () > 0 && tick < 4000 do
       tick <- tick + 1;
-      self#timeslice tick
+      if tick mod 10 == 0 then begin
+        Printf.printf "Tick: %d\n%!" tick
+      end;
+
+      Graph.reset_text ();
+
+      self#timeslice tick;
+
+      if tick mod 10 == 0 then begin
+        Graph.draw_data ();
+        self#draw ();
+        Graph.sync ()
+      end;
     done;
 
     (*
@@ -372,31 +611,30 @@ class world size_x size_y = object (self)
       Printf.printf "%d: %d\n" i (Array.get buckets i);
       Graph.add_point 3 (Array.get buckets i)
     done;
-
-    Matrix.print (Matrix.ident 10 1);
-    Matrix.print (Matrix.mul (Matrix.ident 10 10) (Matrix.rand 10 10));
     *)
 
-  method draw () =
-    terrain#draw ();
-    List.iter begin fun creat ->
-      let (x, y) = creat#get_pos () in
-      let size = creat#get_size () in
-      Graph.draw_circle x y (int_of_float size)
-    end creatures
+    (*
+    Matrix.print (Matrix.ident 10 1);
+    Matrix.print (Matrix.mul (Matrix.ident 10 10) (Matrix.rand 10 10));
+    let m = (Matrix.rand 10 10) in
+    Matrix.print m;
+    Matrix.print (Matrix.mul (Matrix.ident 10 10) m);
+    *)
 
+    ignore Owl.(Mat.((uniform 10 10) * (eye 10) |> print));
 end
 
 
 let () =
   Printf.printf "A Caml's Life Simulator...\n\n";
   Random.self_init ();
+  Graph.start ();
   let world = new world 100 100 in
   world#run ();
   world#summary ();
-  let draw () =
+  let _draw () =
     world#draw ();
     Graph.draw_data ()
   in
-  Graph.display_graph draw
+  Graph.pause()
 
