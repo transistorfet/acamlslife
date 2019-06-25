@@ -1,5 +1,10 @@
 
-* can you make the fitness function determine chance of dividing
+
+* need stats on ancenstry now... I need to know how many variants are related, and how closely related they are
+* collision restrictions, so creatures can't be overlapping
+* there seems to be a problem with drawing creatures
+
+
 * can you make the parameters be a vector or matrix
-* add neural decision making (with back propogation this time?)
+* add back propegation somehow??
 

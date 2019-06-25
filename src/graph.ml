@@ -26,14 +26,20 @@ let clear_grid x y =
   Graphics.set_color Graphics.black;
   Graphics.fill_rect 0 (height - wy) wx height
 
-let draw_circle x y r =
+let draw_circle x y r c =
   let height = Graphics.size_y () in
-  let ax = border + (x * zoom) in
-  let ay = (height - border) - (y * zoom) in
-  Graphics.set_color Graphics.red;
+  let ax = border + (int_of_float (x *. float_of_int zoom)) in
+  let ay = (height - border) - (int_of_float (y *. float_of_int zoom)) in
+  Graphics.set_color c;
   Graphics.fill_circle ax ay r;
   Graphics.set_color Graphics.black;
   Graphics.draw_circle ax ay r
+
+let get_colour i =
+  let r = (i mod 8) * 25 + 50 in
+  let g = (i / 8 mod 8) * 25 + 50 in
+  let b = (i / 64 mod 8) * 25 + 50 in
+  Graphics.rgb r g b
 
 
 (** Draw Side Text **)

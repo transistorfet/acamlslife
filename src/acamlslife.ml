@@ -18,6 +18,16 @@ let get_next_id () =
   _NEXT_ID := !_NEXT_ID + 1;
   id
 
+let _NEXT_COL = ref 1
+
+let get_next_col () =
+  let col = !_NEXT_COL in
+  _NEXT_COL := !_NEXT_COL + 1;
+  col
+
+let get_current_col () =
+  !_NEXT_COL - 1
+
 
 
 let pi = 4.0 *. atan 1.0
@@ -286,15 +296,11 @@ class creature_brain = object (self)
     let r1 = Owl.Mat.(layer1w *@ x + layer1b) |> sin_mat in
     let r2 = Owl.Mat.(layer2w *@ r1 + layer2b) |> sigmoid_mat in
     let r3 = Owl.Mat.(layer3w *@ r2 + layer3b) |> sigmoid_mat in
-    Owl.Mat.print r3;
+    (*Owl.Mat.print r3;*)
     r3
 
   method clone () =
-    let newbrain = Oo.copy self in
-    if Random.float 1.0 < 0.4 then begin
-      newbrain#alter ()
-    end;
-    newbrain
+    Oo.copy self
 
   method alter () =
     let modify x =
@@ -302,12 +308,18 @@ class creature_brain = object (self)
     in
     layers <- List.map (fun (w, b) -> Owl.Mat.( (map modify w, map modify b) )) layers
 
+  method mabye_alter () =
+    if Random.float 1.0 < 0.05 then begin
+      self#alter ()
+    end
+
 end
 
 
-class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:float) = object (self)
+class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:float) (energy:float) (colour:int) = object (self)
   val id = get_next_id ()
   val parent = parent
+  val ancestor = ancestor
 
   (* State *)
   val mutable x = 0.0
@@ -335,10 +347,19 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
   (* Stats *)
   val mutable total_eaten = 0.0
   val mutable divisions = 0
-
+  val mutable colour = colour
 
   method get_id () =
     id
+
+  method get_ancestor () =
+    ancestor
+
+  method get_colour () =
+    colour
+
+  method set_colour (c:int) =
+    colour <- c
 
   method get_pos () =
     (int_of_float x, int_of_float y)
@@ -371,7 +392,7 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
     let (width, height) = terrain#get_sizef () in
     let nx = wrap_to_float ((speed *. cos direction) +. x) width in
     let ny = wrap_to_float ((speed *. sin direction) +. y) height in
-    Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id x y nx ny;
+    (*Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id x y nx ny;*)
     x <- nx;
     y <- ny
 
@@ -458,14 +479,7 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
 
     state <- self#select_action terrain;
 
-    (*
-    Graph.add_point 0 (truncate size);
-    Graph.add_point 1 (truncate (tile#get_food ()));
-    Graph.add_point 2 (truncate (self#fitness ()));
-    Graph.add_point 3 (truncate energy);
-    *)
-
-    Printf.printf "creature %d is size %f and energy is %f; tile is %f; fitness is %f/%f\n" id size energy (tile#get_food ()) (self#fitness ()) avg_fitness;
+    (*Printf.printf "creature %d is size %f and energy is %f; tile is %f; fitness is %f/%f\n" id size energy (tile#get_food ()) (self#fitness ()) avg_fitness;*)
     if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && self#fitness () > avg_fitness then
     (*if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && Random.float 1.0 >= 0.95 then*)
       Divide
@@ -479,12 +493,20 @@ class creature ?(brain:creature_brain option) (parent:int) (size:float) (energy:
     size <- size /. 2.0;
     energy <- energy /. 2.0;
     total_eaten <- 0.0;
-    let creat = new creature ~brain:brain id size energy in
-    Printf.printf "creature %d has divided into %d\n" id (creat#get_id ());
+    let newbrain = brain#clone () in
+    let newcolour =
+      if Random.float 1.0 < 0.2 then begin
+        newbrain#alter ();
+        get_next_col ()
+      end else
+        colour
+    in
+    let creat = new creature ~brain:newbrain id ancestor size energy newcolour in
+    (*Printf.printf "creature %d has divided into %d\n" id (creat#get_id ());*)
     creat
 
   method die () =
-    Printf.printf "creature %d has died\n" id;
+    (*Printf.printf "creature %d has died\n" id;*)
     state <- Dead;
     Die
 
@@ -496,6 +518,7 @@ class world size_x size_y = object (self)
   val mutable tick = 0
   val mutable total_creatures = 0
   val mutable creatures: creature list = [ ]
+  val initial_creatures = 500
 
 
   val mutable size_integral = 0.0
@@ -523,18 +546,25 @@ class world size_x size_y = object (self)
           let direction = Random.float (pi *. 2.0) in
           let nx = wrap_to_float ((distance *. cos direction) +. x) (float_of_int size_x) in
           let ny = wrap_to_float ((distance *. sin direction) +. y) (float_of_int size_y) in
-          Printf.printf "%f %f\n%!" nx ny;
           newcreat#move nx ny;
           creat :: newcreat :: acc
         end
     end [] creatures;
 
+    let ancestors = Array.make (initial_creatures + 1) 0 in
+    let variants = Array.make (get_current_col () + 1) 0 in
     List.iter begin fun creat ->
       creat#get_size () |> sum_size#add;
       creat#get_energy () |> sum_energy#add;
       creat#fitness () |> sum_fitness#add;
       (terrain#get_tile (creat#get_pos ()))#get_food () |> sum_creat_food#add;
+      let col = creat#get_colour () in
+      variants.(col) <- variants.(col) + 1;
+      let anc = creat#get_ancestor () in
+      ancestors.(anc) <- ancestors.(anc) + 1
     end creatures;
+    let num_variants = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 variants in
+    let num_ancestors = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 ancestors in
 
     let numcreats = List.length creatures in
     let numcreatsf = float_of_int numcreats in
@@ -548,7 +578,8 @@ class world size_x size_y = object (self)
     Graph.add_point 0 (sum_size#get_value () /. 4.0 |> truncate);
     Graph.add_point 1 (terrain#get_total_food () /. 5000.0 |> truncate);
     Graph.add_point 2 (sum_fitness#get_value () *. 50.0 |> truncate);
-    Graph.add_point 3 (sum_energy#get_value () |> truncate);
+    (*Graph.add_point 3 (sum_energy#get_value () |> truncate);*)
+    Graph.add_point 3 (num_variants / 2);
     Graph.add_point 4 (truncate numcreatsf);
     Graph.add_point 5 (sum_creat_food#get_value () |> truncate);
 
@@ -559,6 +590,8 @@ class world size_x size_y = object (self)
     Graph.print (Printf.sprintf "d/dt Population: %d" (population#get_diff () |> int_of_float));
     Graph.print (Printf.sprintf "d/dt Size: %f" (sum_size#get_diff ()));
     Graph.print (Printf.sprintf "Avg Size: %f" (sum_size#get_value () /. numcreatsf));
+    Graph.print (Printf.sprintf "Living Variants: %d/%d" num_variants (get_current_col ()));
+    Graph.print (Printf.sprintf "Ancestery: %d" num_ancestors);
 
 
   method divide (creat:creature) =
@@ -566,8 +599,8 @@ class world size_x size_y = object (self)
     creatures <- newcreat :: creatures;
     total_creatures <- total_creatures + 1
 
-  method spawn parent size =
-    let creat = new creature parent size 1.0 in
+  method spawn parent size colour =
+    let creat = new creature parent colour size 1.0 colour in
     creatures <- creat :: creatures;
     total_creatures <- total_creatures + 1;
     creat
@@ -578,9 +611,9 @@ class world size_x size_y = object (self)
   method draw () =
     terrain#draw ();
     List.iter begin fun creat ->
-      let (x, y) = creat#get_pos () in
+      let (x, y) = creat#get_posf () in
       let size = creat#get_size () in
-      Graph.draw_circle x y (int_of_float size)
+      Graph.draw_circle x y (int_of_float size) (creat#get_colour () |> Graph.get_colour)
     end creatures
 
   method summary () =
@@ -593,18 +626,14 @@ class world size_x size_y = object (self)
     Printf.printf "%!"
 
   method run () =
-    for _ = 1 to 500 do
-      let creat = self#spawn 0 2.0 in
+    for _ = 1 to initial_creatures do
+      let creat = self#spawn 0 2.0 (get_next_col ()) in
       let (width, height) = terrain#get_sizef () in
       creat#move (Random.float width) (Random.float height)
     done;
 
     while self#creature_count () > 0 (*&& tick < 4000*) do
       tick <- tick + 1;
-      if tick mod 10 == 0 then begin
-        Printf.printf "Tick: %d\n%!" tick
-      end;
-
       Graph.reset_text ();
 
       self#timeslice tick;
@@ -615,44 +644,6 @@ class world size_x size_y = object (self)
         Graph.sync ()
       end;
     done;
-
-    (*
-    let dq1 = ref 0.9 in
-    let dq2 = ref 0.3 in
-    for _ = 0 to 100 do
-      dq1 := 0.3 *. !dq1 +. 0.9 *. !dq2 *. !dq2;
-      dq2 := 0.56 *. !dq1 *. !dq1 +. 0.89 *. !dq2;
-      Graph.add_point 2 (truncate (!dq1 *. 100.0));
-      Graph.add_point 3 (truncate (!dq2 *. 100.0));
-    done;
-    *)
-
-    (*
-    let buckets = Array.make 100 0 in
-    for _ = 1 to 1000 do
-      let r = normal 1.0 10 in
-      let i = truncate (r *. 100.0) in
-      Printf.printf "%d %f\n" i r;
-      Array.set buckets i ((Array.get buckets i) + 1)
-    done;
-
-    for i = 0 to 99 do
-      Printf.printf "%d: %d\n" i (Array.get buckets i);
-      Graph.add_point 3 (Array.get buckets i)
-    done;
-    *)
-
-    (*
-    Matrix.print (Matrix.ident 10 1);
-    Matrix.print (Matrix.mul (Matrix.ident 10 10) (Matrix.rand 10 10));
-    let m = (Matrix.rand 10 10) in
-    Matrix.print m;
-    Matrix.print (Matrix.mul (Matrix.ident 10 10) m);
-    *)
-
-    (*
-    ignore Owl.(Mat.((uniform 10 10) * (eye 10) |> print));
-    *)
 end
 
 
