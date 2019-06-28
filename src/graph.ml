@@ -131,6 +131,15 @@ let sync () =
   flush_text ();
   Graphics.synchronize ()
 
+let get_key_press () =
+  let status = Graphics.wait_next_event [Graphics.Key_pressed; Graphics.Poll] in
+  if not status.keypressed then
+    Char.chr 0
+  else begin
+    Graphics.wait_next_event [Graphics.Key_pressed] |> ignore;
+    status.key
+  end
+
 let display_graph draw_func =
   start ();
   draw_func ();

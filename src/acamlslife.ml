@@ -175,8 +175,8 @@ class tile = object (_self)
   val mutable food = 10.0 *. (Random.float 1.0) ** 10.0
   (*val mutable food = 10.0*)
 
-  val growth_rate = 0.01
-  val max_feed_factor = 2.0
+  val growth_rate = 0.005
+  val max_feed_factor = 4.0
   val max_capacity = (Random.float 1.0) ** 3.0 *. 40.0
 
   initializer
@@ -232,7 +232,7 @@ class terrain size_x size_y = object (self)
     done
 
   method draw () =
-    Graph.clear_grid 100 100;
+    Graph.clear_grid width height;
     let f i j =
       let tile = self#get_tile (i, j) in
       let food = (int_of_float (tile#get_food () /. tile#get_max_capacity () *. 255.0)) in
@@ -253,7 +253,7 @@ class terrain size_x size_y = object (self)
 end
 
 
-let num_inputs = 10
+let num_inputs = 12
 let num_outputs = 6
 
 let network = [ num_inputs; 20; 40; num_outputs ]
@@ -308,10 +308,12 @@ class creature_brain = object (self)
     in
     layers <- List.map (fun (w, b) -> Owl.Mat.( (map modify w, map modify b) )) layers
 
-  method mabye_alter () =
-    if Random.float 1.0 < 0.05 then begin
-      self#alter ()
-    end
+  method save dirname =
+    for i = 0 to (List.length layers - 1) do
+      let (w, b) = List.nth layers i in
+      Owl.Mat.save_txt w (dirname ^ Printf.sprintf "/brain%dw.mat" i);
+      Owl.Mat.save_txt b (dirname ^ Printf.sprintf "/brain%db.mat" i)
+    done
 
 end
 
@@ -336,12 +338,12 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     | None -> new creature_brain
 
   (* Parameters *)
-  val metabolism_rest = 0.08
+  val metabolism_rest = 0.10
   val metabolism_eating = 0.15
   val metabolism_walking = 0.3
   val digest_efficiency = 1.0
   val feed_factor = 0.4
-  val growth_factor = 0.2
+  val growth_factor = 0.1
   val energy_capacity_factor = 10.0
 
   (* Stats *)
@@ -420,6 +422,8 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     let m = Owl.Mat.empty num_inputs 1 in
     List.iteri (fun i x -> Owl.Mat.set m i 0 x) (terrain#get_inputs (self#get_pos ()));
     Owl.Mat.set m 9 0 energy;
+    Owl.Mat.set m 10 0 size;
+    Owl.Mat.set m 11 0 direction;
     m
 
   method select_action (terrain:terrain) =
@@ -427,7 +431,7 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     let r = brain#infer x in
 
     let (eat, walk, rest, turnl, turnr, sp) = Owl.Mat.( (get r 0 0, get r 1 0, get r 2 0, get r 3 0, get r 4 0, get r 5 0) ) in
-    if eat > walk && eat > rest && eat > 0.2 then
+    if eat > walk && eat > rest && eat > 0.3 then
       Eating
     else if walk > rest && walk > 0.4 then begin
       (*direction <- direction +. (normal ~m:(pi *. 0.25) 2);*)
@@ -510,94 +514,139 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     state <- Dead;
     Die
 
+  method save dirname =
+    if not (Sys.file_exists dirname) then begin
+      Unix.mkdir dirname 0o755
+    end;
+    let f = open_out (Printf.sprintf "%s/info.txt" dirname) in
+    output_string f (Printf.sprintf "id: %d\n" id);
+    output_string f (Printf.sprintf "parent: %d\n" parent);
+    output_string f (Printf.sprintf "ancestor: %d\n" ancestor);
+    output_string f (Printf.sprintf "variant: %d\n" colour);
+    output_string f (Printf.sprintf "lifespan: %d\n" lifespan);
+    output_string f (Printf.sprintf "size: %f\n" size);
+    output_string f (Printf.sprintf "total eaten: %f\n" total_eaten);
+    output_string f (Printf.sprintf "divisions: %d\n" divisions);
+    close_out f;
+    brain#save dirname
+
 end
 
 
 class world size_x size_y = object (self)
   val terrain = new terrain size_x size_y
   val mutable tick = 0
+  val mutable pause = false
   val mutable total_creatures = 0
   val mutable creatures: creature list = [ ]
-  val initial_creatures = 500
+
+  val initial_creatures = 1000
+  val draw_rate = 10  
 
 
   val mutable size_integral = 0.0
   val mutable population = new stat_collector
   val mutable sum_size = new stat_collector
-  val mutable sum_energy = new stat_collector
-  val mutable sum_fitness = new stat_collector
-  val mutable sum_creat_food = new stat_collector
+  val mutable avg_energy = new stat_collector
+  val mutable avg_fitness = new stat_collector
+  val mutable avg_creat_food = new stat_collector
+  val mutable sums_variants = Array.make 1 0
+  val mutable sums_ancestors = Array.make 1 0
 
+  method creature_count () =
+    List.length creatures
 
   method timeslice tick =
     terrain#timeslice tick;
+
     creatures <- List.fold_left begin fun acc creat ->
-      let action = creat#timeslice terrain (sum_fitness#get_value ()) in
+      let action = creat#timeslice terrain (avg_fitness#get_value ()) in
       size_integral <- size_integral +. creat#get_size ();
       match action with
       | Die -> acc
       | Live -> creat :: acc
-      | Divide -> begin
-          let newcreat = creat#divide () in
-          total_creatures <- total_creatures + 1;
-
-          let (x, y) = creat#get_posf () in
-          let distance = creat#get_size () +. newcreat#get_size () in
-          let direction = Random.float (pi *. 2.0) in
-          let nx = wrap_to_float ((distance *. cos direction) +. x) (float_of_int size_x) in
-          let ny = wrap_to_float ((distance *. sin direction) +. y) (float_of_int size_y) in
-          newcreat#move nx ny;
+      | Divide ->
+          let newcreat = self#divide creat in
           creat :: newcreat :: acc
-        end
     end [] creatures;
 
-    let ancestors = Array.make (initial_creatures + 1) 0 in
-    let variants = Array.make (get_current_col () + 1) 0 in
-    List.iter begin fun creat ->
-      creat#get_size () |> sum_size#add;
-      creat#get_energy () |> sum_energy#add;
-      creat#fitness () |> sum_fitness#add;
-      (terrain#get_tile (creat#get_pos ()))#get_food () |> sum_creat_food#add;
-      let col = creat#get_colour () in
-      variants.(col) <- variants.(col) + 1;
-      let anc = creat#get_ancestor () in
-      ancestors.(anc) <- ancestors.(anc) + 1
-    end creatures;
-    let num_variants = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 variants in
-    let num_ancestors = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 ancestors in
+    self#collect_statistics ();
 
     let numcreats = List.length creatures in
     let numcreatsf = float_of_int numcreats in
 
-    sum_size#calculate ();
-    sum_energy#avg_and_calc numcreatsf;
-    sum_fitness#avg_and_calc numcreatsf;
-    sum_creat_food#avg_and_calc numcreatsf;
-    population#collect numcreatsf;
+    let living_variants = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 sums_variants in
+    let living_ancestors = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 sums_ancestors in
 
-    Graph.add_point 0 (sum_size#get_value () /. 4.0 |> truncate);
+    Graph.add_point 0 (sum_size#get_value () /. 10.0 |> truncate);
     Graph.add_point 1 (terrain#get_total_food () /. 5000.0 |> truncate);
-    Graph.add_point 2 (sum_fitness#get_value () *. 50.0 |> truncate);
-    (*Graph.add_point 3 (sum_energy#get_value () |> truncate);*)
-    Graph.add_point 3 (num_variants / 2);
-    Graph.add_point 4 (truncate numcreatsf);
-    Graph.add_point 5 (sum_creat_food#get_value () |> truncate);
+    Graph.add_point 2 (avg_fitness#get_value () *. 50.0 |> truncate);
+    (*Graph.add_point 3 (avg_energy#get_value () |> truncate);*)
+    Graph.add_point 3 (living_variants / 4);
+    Graph.add_point 4 (truncate numcreatsf / 2);
+    Graph.add_point 5 (avg_creat_food#get_value () |> truncate);
 
-    Graph.print (Printf.sprintf "Tick: %d" tick);
-    Graph.print (Printf.sprintf "Total Births: %d" total_creatures);
-    Graph.print (Printf.sprintf "Total Deaths: %d" (total_creatures - int_of_float (population#get_value ())));
-    Graph.print (Printf.sprintf "Population: %d" (population#get_value () |> int_of_float));
-    Graph.print (Printf.sprintf "d/dt Population: %d" (population#get_diff () |> int_of_float));
-    Graph.print (Printf.sprintf "d/dt Size: %f" (sum_size#get_diff ()));
-    Graph.print (Printf.sprintf "Avg Size: %f" (sum_size#get_value () /. numcreatsf));
-    Graph.print (Printf.sprintf "Living Variants: %d/%d" num_variants (get_current_col ()));
-    Graph.print (Printf.sprintf "Ancestery: %d" num_ancestors);
+    if tick mod draw_rate == 0 then begin
+      Graph.print (Printf.sprintf "Tick: %d" tick);
+      Graph.print (Printf.sprintf "Total Births: %d" total_creatures);
+      Graph.print (Printf.sprintf "Total Deaths: %d" (total_creatures - int_of_float (population#get_value ())));
+      Graph.print (Printf.sprintf "Population: %d" (population#get_value () |> int_of_float));
+      Graph.print (Printf.sprintf "d/dt Population: %d" (population#get_diff () |> int_of_float));
+      Graph.print (Printf.sprintf "d/dt Size: %f" (sum_size#get_diff ()));
+      Graph.print (Printf.sprintf "Avg Size: %f" (sum_size#get_value () /. numcreatsf));
+      Graph.print (Printf.sprintf "Living Variants: %d/%d" living_variants (get_current_col ()));
+      Graph.print (Printf.sprintf "Ancestery: %d" living_ancestors);
 
+      let top10 = ref 0 in
+      let variant_pairs = self#sorted_variants () in
+      for i = 0 to 9 do
+        let (v, n) = variant_pairs.(i) in
+        Graph.print (Printf.sprintf "Variant %d:  %d" v n);
+        top10 := !top10 + n
+      done;
+      Graph.print (Printf.sprintf "Top 10 / Total: %f" (float_of_int !top10 /. numcreatsf));
+  end
+
+  method sorted_variants () =
+    let variant_pairs = Array.mapi (fun i x -> (i, x)) sums_variants in
+    Array.sort (fun (_, a) (_, b) -> compare a b * -1) variant_pairs;
+    variant_pairs
+
+  method collect_statistics () =
+    sums_ancestors <- Array.make (initial_creatures + 1) 0;
+    sums_variants <- Array.make (get_current_col () + 1) 0;
+
+    List.iter begin fun creat ->
+      creat#get_size () |> sum_size#add;
+      creat#get_energy () |> avg_energy#add;
+      creat#fitness () |> avg_fitness#add;
+      (terrain#get_tile (creat#get_pos ()))#get_food () |> avg_creat_food#add;
+
+      let col = creat#get_colour () in
+      sums_variants.(col) <- sums_variants.(col) + 1;
+      let anc = creat#get_ancestor () in
+      sums_ancestors.(anc) <- sums_ancestors.(anc) + 1
+    end creatures;
+
+    let numcreatsf = List.length creatures |> float_of_int in
+
+    sum_size#calculate ();
+    avg_energy#avg_and_calc numcreatsf;
+    avg_fitness#avg_and_calc numcreatsf;
+    avg_creat_food#avg_and_calc numcreatsf;
+    population#collect numcreatsf;
 
   method divide (creat:creature) =
     let newcreat = creat#divide () in
-    creatures <- newcreat :: creatures;
-    total_creatures <- total_creatures + 1
+    total_creatures <- total_creatures + 1;
+
+    let (x, y) = creat#get_posf () in
+    let distance = creat#get_size () +. newcreat#get_size () in
+    let direction = Random.float (pi *. 2.0) in
+    let nx = wrap_to_float ((distance *. cos direction) +. x) (float_of_int size_x) in
+    let ny = wrap_to_float ((distance *. sin direction) +. y) (float_of_int size_y) in
+    newcreat#move nx ny;
+    newcreat
 
   method spawn parent size colour =
     let creat = new creature parent colour size 1.0 colour in
@@ -605,8 +654,7 @@ class world size_x size_y = object (self)
     total_creatures <- total_creatures + 1;
     creat
 
-  method creature_count () =
-    List.length creatures
+
 
   method draw () =
     terrain#draw ();
@@ -616,14 +664,28 @@ class world size_x size_y = object (self)
       Graph.draw_circle x y (int_of_float size) (creat#get_colour () |> Graph.get_colour)
     end creatures
 
-  method summary () =
-    let creats = List.length creatures in
-    (*let average = (List.fold_left (fun acc creat -> acc +. creat#get_size ()) 0.0 creatures) /. (float_of_int creats) in*)
-    let average = size_integral /. (float_of_int creats) /. (float_of_int tick) in
-    Printf.printf "Total Creatures: %d\n" total_creatures;
-    Printf.printf "Average Size: %f\n" average;
-    Printf.printf "Total ticks: %d\n" tick;
-    Printf.printf "%!"
+
+  method save_all () =
+    let dirname = Printf.sprintf "creatures-%d" (Unix.time () |> int_of_float) in
+    if not (Sys.file_exists dirname) then begin
+      Unix.mkdir dirname 0o755
+    end;
+    let f = open_out (Printf.sprintf "%s/stats.txt" dirname) in
+    let variant_pairs = self#sorted_variants () in
+    for i = 0 to 9 do
+      let (v, n) = variant_pairs.(i) in
+      output_string f (Printf.sprintf "variant %d: %d\n" v n);
+    done;
+    close_out f;
+    List.iter (fun creat -> creat#save (Printf.sprintf "%s/%d" dirname (creat#get_id ()))) creatures
+
+
+
+  method process_key () =
+    match Graph.get_key_press () with
+    | 's' -> self#save_all ()
+    | 'p' -> pause <- not pause
+    | _ -> ()
 
   method run () =
     for _ = 1 to initial_creatures do
@@ -633,17 +695,24 @@ class world size_x size_y = object (self)
     done;
 
     while self#creature_count () > 0 (*&& tick < 4000*) do
-      tick <- tick + 1;
-      Graph.reset_text ();
+      self#process_key ();
 
-      self#timeslice tick;
+      if not pause then begin
+        Graph.reset_text ();
+        tick <- tick + 1;
+        self#timeslice tick;
 
-      if tick mod 10 == 0 then begin
-        Graph.draw_data ();
-        self#draw ();
-        Graph.sync ()
+        if tick mod draw_rate == 0 then begin
+          Graph.draw_data ();
+          self#draw ();
+          Graph.sync ()
+        end;
       end;
     done;
+    Printf.printf "Total Creatures: %d\n" total_creatures;
+    Printf.printf "Total ticks: %d\n" tick;
+    Printf.printf "%!"
+
 end
 
 
@@ -651,9 +720,10 @@ let () =
   Printf.printf "A Caml's Life Simulator...\n\n";
   Random.self_init ();
   Graph.start ();
+
   let world = new world 100 100 in
   world#run ();
-  world#summary ();
+
   let _draw () =
     world#draw ();
     Graph.draw_data ()
