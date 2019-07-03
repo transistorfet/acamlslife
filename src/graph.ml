@@ -49,8 +49,8 @@ let text_area_width = 200
 let text_area_height = 400
 let line_spacing = 15
 
-let print s =
-  text_data := !text_data @ [s]
+let print ?c:(c=Graphics.white) s =
+  text_data := !text_data @ [ (s, c) ]
 
 let reset_text () =
   text_data := []
@@ -60,8 +60,8 @@ let flush_text () =
   let height = Graphics.size_y () in
   Graphics.set_color Graphics.black;
   Graphics.fill_rect (width - text_area_width) (height - text_area_height) text_area_width text_area_height;
-  List.iteri begin fun i s ->
-    Graphics.set_color Graphics.white;
+  List.iteri begin fun i (s, c) ->
+    Graphics.set_color c;
     Graphics.moveto (width - text_area_width) (height - (line_spacing * i) - border);
     Graphics.draw_string s
   end !text_data;

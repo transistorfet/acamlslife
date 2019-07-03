@@ -175,7 +175,7 @@ class tile = object (_self)
   val mutable food = 10.0 *. (Random.float 1.0) ** 10.0
   (*val mutable food = 10.0*)
 
-  val growth_rate = 0.005
+  val growth_rate = 0.01
   val max_feed_factor = 4.0
   val max_capacity = (Random.float 1.0) ** 3.0 *. 40.0
 
@@ -318,7 +318,7 @@ class creature_brain = object (self)
 end
 
 
-class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:float) (energy:float) (colour:int) = object (self)
+class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:float) (energy:float) (variant:int) = object (self)
   val id = get_next_id ()
   val parent = parent
   val ancestor = ancestor
@@ -345,11 +345,12 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
   val feed_factor = 0.4
   val growth_factor = 0.1
   val energy_capacity_factor = 10.0
+  val size_decrease_factor = 0.5
 
   (* Stats *)
   val mutable total_eaten = 0.0
   val mutable divisions = 0
-  val mutable colour = colour
+  val mutable variant = variant
 
   method get_id () =
     id
@@ -357,11 +358,11 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
   method get_ancestor () =
     ancestor
 
-  method get_colour () =
-    colour
+  method get_variant () =
+    variant
 
-  method set_colour (c:int) =
-    colour <- c
+  method set_variant (c:int) =
+    variant <- c
 
   method get_pos () =
     (int_of_float x, int_of_float y)
@@ -406,7 +407,7 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     if used <= energy then
       energy <- energy -. used
     else (
-      size <- size -. (used -. energy);
+      size <- size -. (used -. energy) *. size_decrease_factor;
       energy <- 0.0
     );
 
@@ -498,14 +499,14 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     energy <- energy /. 2.0;
     total_eaten <- 0.0;
     let newbrain = brain#clone () in
-    let newcolour =
+    let newvariant =
       if Random.float 1.0 < 0.2 then begin
         newbrain#alter ();
         get_next_col ()
       end else
-        colour
+        variant
     in
-    let creat = new creature ~brain:newbrain id ancestor size energy newcolour in
+    let creat = new creature ~brain:newbrain id ancestor size energy newvariant in
     (*Printf.printf "creature %d has divided into %d\n" id (creat#get_id ());*)
     creat
 
@@ -522,7 +523,7 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     output_string f (Printf.sprintf "id: %d\n" id);
     output_string f (Printf.sprintf "parent: %d\n" parent);
     output_string f (Printf.sprintf "ancestor: %d\n" ancestor);
-    output_string f (Printf.sprintf "variant: %d\n" colour);
+    output_string f (Printf.sprintf "variant: %d\n" variant);
     output_string f (Printf.sprintf "lifespan: %d\n" lifespan);
     output_string f (Printf.sprintf "size: %f\n" size);
     output_string f (Printf.sprintf "total eaten: %f\n" total_eaten);
@@ -541,7 +542,7 @@ class world size_x size_y = object (self)
   val mutable creatures: creature list = [ ]
 
   val initial_creatures = 1000
-  val draw_rate = 10  
+  val mutable draw_rate = 10  
 
 
   val mutable size_integral = 0.0
@@ -601,7 +602,7 @@ class world size_x size_y = object (self)
       let variant_pairs = self#sorted_variants () in
       for i = 0 to 9 do
         let (v, n) = variant_pairs.(i) in
-        Graph.print (Printf.sprintf "Variant %d:  %d" v n);
+        Graph.print ~c:(Graph.get_colour v) (Printf.sprintf "Variant %d:  %d" v n);
         top10 := !top10 + n
       done;
       Graph.print (Printf.sprintf "Top 10 / Total: %f" (float_of_int !top10 /. numcreatsf));
@@ -622,7 +623,7 @@ class world size_x size_y = object (self)
       creat#fitness () |> avg_fitness#add;
       (terrain#get_tile (creat#get_pos ()))#get_food () |> avg_creat_food#add;
 
-      let col = creat#get_colour () in
+      let col = creat#get_variant () in
       sums_variants.(col) <- sums_variants.(col) + 1;
       let anc = creat#get_ancestor () in
       sums_ancestors.(anc) <- sums_ancestors.(anc) + 1
@@ -648,8 +649,8 @@ class world size_x size_y = object (self)
     newcreat#move nx ny;
     newcreat
 
-  method spawn parent size colour =
-    let creat = new creature parent colour size 1.0 colour in
+  method spawn parent size variant =
+    let creat = new creature parent variant size 1.0 variant in
     creatures <- creat :: creatures;
     total_creatures <- total_creatures + 1;
     creat
@@ -661,7 +662,7 @@ class world size_x size_y = object (self)
     List.iter begin fun creat ->
       let (x, y) = creat#get_posf () in
       let size = creat#get_size () in
-      Graph.draw_circle x y (int_of_float size) (creat#get_colour () |> Graph.get_colour)
+      Graph.draw_circle x y (int_of_float size) (creat#get_variant () |> Graph.get_colour)
     end creatures
 
 
@@ -679,12 +680,27 @@ class world size_x size_y = object (self)
     close_out f;
     List.iter (fun creat -> creat#save (Printf.sprintf "%s/%d" dirname (creat#get_id ()))) creatures
 
+  method kill_most () =
+    let variant_pairs = self#sorted_variants () in
+    let top10 = Hashtbl.create 10 in
+    for i = 0 to 9 do
+      let (v, _) = variant_pairs.(i) in
+      Hashtbl.add top10 v true
+    done;
+    creatures <- List.filter (fun creat -> begin
+      match Hashtbl.find_opt top10 (creat#get_variant ()) with
+      | None -> false
+      | _ -> true
+    end) creatures
 
 
   method process_key () =
     match Graph.get_key_press () with
+    | 'k' -> self#kill_most ()
     | 's' -> self#save_all ()
     | 'p' -> pause <- not pause
+    | '+' -> draw_rate <- max (draw_rate / 2) 1
+    | '-' -> draw_rate <- min (draw_rate * 2) 20
     | _ -> ()
 
   method run () =
