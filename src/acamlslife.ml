@@ -59,6 +59,12 @@ let wrap_to num width =
     num mod width
 
 
+let mkdir dirname =
+  if not (Sys.file_exists dirname) then begin
+    Unix.mkdir dirname 0o755
+  end;
+
+
 module Matrix = struct
   let init m n f =
     let mat = Array.make_matrix m n 0.0 in
@@ -279,6 +285,9 @@ let sigmoid_mat a =
 let sin_mat a =
   Owl.Mat.map (fun x -> sin x) a
 
+let relu_mat a =
+  Owl.Mat.map (fun x -> if x > 0.0 then x else 0.0) a
+
 class creature_brain = object (self)
   val mutable layers = generate_layers ()
 
@@ -293,7 +302,7 @@ class creature_brain = object (self)
     let (layer2w, layer2b) = List.nth layers 1 in
     let (layer3w, layer3b) = List.nth layers 2 in
 
-    let r1 = Owl.Mat.(layer1w *@ x + layer1b) |> sin_mat in
+    let r1 = Owl.Mat.(layer1w *@ x + layer1b) |> sigmoid_mat in
     let r2 = Owl.Mat.(layer2w *@ r1 + layer2b) |> sigmoid_mat in
     let r3 = Owl.Mat.(layer3w *@ r2 + layer3b) |> sigmoid_mat in
     (*Owl.Mat.print r3;*)
@@ -516,10 +525,9 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     Die
 
   method save dirname =
-    if not (Sys.file_exists dirname) then begin
-      Unix.mkdir dirname 0o755
-    end;
-    let f = open_out (Printf.sprintf "%s/info.txt" dirname) in
+    let creatdir = Printf.sprintf "%s/creatures" dirname in
+    mkdir creatdir;
+    let f = open_out (Printf.sprintf "%s/%d.txt" creatdir id) in
     output_string f (Printf.sprintf "id: %d\n" id);
     output_string f (Printf.sprintf "parent: %d\n" parent);
     output_string f (Printf.sprintf "ancestor: %d\n" ancestor);
@@ -529,7 +537,12 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     output_string f (Printf.sprintf "total eaten: %f\n" total_eaten);
     output_string f (Printf.sprintf "divisions: %d\n" divisions);
     close_out f;
-    brain#save dirname
+    mkdir (Printf.sprintf "%s/brains" dirname);
+    let braindir = Printf.sprintf "%s/brains/%d" dirname variant in
+    if not (Sys.file_exists braindir) then begin
+      mkdir braindir;
+      brain#save braindir
+    end;
 
 end
 
@@ -542,7 +555,7 @@ class world size_x size_y = object (self)
   val mutable creatures: creature list = [ ]
 
   val initial_creatures = 1000
-  val mutable draw_rate = 10  
+  val mutable draw_rate = 10
 
 
   val mutable size_integral = 0.0
@@ -667,10 +680,8 @@ class world size_x size_y = object (self)
 
 
   method save_all () =
-    let dirname = Printf.sprintf "creatures-%d" (Unix.time () |> int_of_float) in
-    if not (Sys.file_exists dirname) then begin
-      Unix.mkdir dirname 0o755
-    end;
+    let dirname = Printf.sprintf "save-%d" (Unix.time () |> int_of_float) in
+    mkdir dirname;
     let f = open_out (Printf.sprintf "%s/stats.txt" dirname) in
     let variant_pairs = self#sorted_variants () in
     for i = 0 to 9 do
@@ -678,7 +689,7 @@ class world size_x size_y = object (self)
       output_string f (Printf.sprintf "variant %d: %d\n" v n);
     done;
     close_out f;
-    List.iter (fun creat -> creat#save (Printf.sprintf "%s/%d" dirname (creat#get_id ()))) creatures
+    List.iter (fun creat -> creat#save dirname) creatures
 
   method kill_most () =
     let variant_pairs = self#sorted_variants () in
@@ -700,7 +711,7 @@ class world size_x size_y = object (self)
     | 's' -> self#save_all ()
     | 'p' -> pause <- not pause
     | '+' -> draw_rate <- max (draw_rate / 2) 1
-    | '-' -> draw_rate <- min (draw_rate * 2) 20
+    | '-' -> draw_rate <- min (draw_rate * 2) 40
     | _ -> ()
 
   method run () =
