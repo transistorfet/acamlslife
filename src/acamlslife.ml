@@ -45,6 +45,10 @@ let normal_modifier n factor dev =
 let rand_diff () =
   1.0 -. Random.float 2.0
 
+let rand_unit () =
+  Random.float 1.0
+
+
 
 let wrap_to_float num width =
   if num < 0.0 then
@@ -259,26 +263,6 @@ class terrain size_x size_y = object (self)
 end
 
 
-let num_inputs = 12
-let num_outputs = 6
-
-let network = [ num_inputs; 20; 40; num_outputs ]
-
-let create_mat ?f:(f=rand_diff) x y =
-  Owl.Mat.(empty x y |> map (fun _ -> f ()))
-
-let generate_layer inp out =
-  (create_mat out inp, create_mat out 1)
-
-let generate_layers () =
-  let layers = ref [] in
-  for i = 0 to (List.length network - 2) do
-    let inp = List.nth network i in
-    let out = List.nth network (i + 1) in
-    layers := !layers @ [ generate_layer inp out ]
-  done;
-  !layers
-
 let sigmoid_mat a =
   Owl.Mat.map (fun x -> 1.0 /. (1.0 +. exp (-1.0 *. x))) a
 
@@ -287,6 +271,30 @@ let sin_mat a =
 
 let relu_mat a =
   Owl.Mat.map (fun x -> if x > 0.0 then x else 0.0) a
+
+
+let num_inputs = 12
+let num_outputs = 6
+
+let network = [ num_inputs; 20; 40; num_outputs ]
+let activations = [ sigmoid_mat; sigmoid_mat; sigmoid_mat ]
+
+
+let create_mat ?f:(f=rand_diff) x y =
+  Owl.Mat.(empty x y |> map (fun _ -> f ()))
+
+let generate_layer inp out act =
+  (create_mat out inp, create_mat out 1, act)
+
+let generate_layers () =
+  let layers = ref [] in
+  for i = 0 to (List.length network - 2) do
+    let inp = List.nth network i in
+    let out = List.nth network (i + 1) in
+    layers := !layers @ [ generate_layer inp out (List.nth activations i) ]
+  done;
+  !layers
+
 
 class creature_brain = object (self)
   val mutable layers = generate_layers ()
@@ -298,15 +306,11 @@ class creature_brain = object (self)
     Matrix.print r2;
     *)
 
-    let (layer1w, layer1b) = List.nth layers 0 in
-    let (layer2w, layer2b) = List.nth layers 1 in
-    let (layer3w, layer3b) = List.nth layers 2 in
-
-    let r1 = Owl.Mat.(layer1w *@ x + layer1b) |> sigmoid_mat in
-    let r2 = Owl.Mat.(layer2w *@ r1 + layer2b) |> sigmoid_mat in
-    let r3 = Owl.Mat.(layer3w *@ r2 + layer3b) |> sigmoid_mat in
-    (*Owl.Mat.print r3;*)
-    r3
+    let res = ref x in
+    List.iter (fun (layer_w, layer_b, activation) ->
+      res := Owl.Mat.(layer_w *@ !res + layer_b) |> activation
+    ) layers;
+    !res
 
   method clone () =
     Oo.copy self
@@ -315,11 +319,11 @@ class creature_brain = object (self)
     let modify x =
       x +. ((Random.float 2.0) -. 1.0) ** 3.0
     in
-    layers <- List.map (fun (w, b) -> Owl.Mat.( (map modify w, map modify b) )) layers
+    layers <- List.map (fun (w, b, a) -> Owl.Mat.( (map modify w, map modify b, a) )) layers
 
   method save dirname =
     for i = 0 to (List.length layers - 1) do
-      let (w, b) = List.nth layers i in
+      let (w, b, _) = List.nth layers i in
       Owl.Mat.save_txt w (dirname ^ Printf.sprintf "/brain%dw.mat" i);
       Owl.Mat.save_txt b (dirname ^ Printf.sprintf "/brain%db.mat" i)
     done
@@ -592,12 +596,11 @@ class world size_x size_y = object (self)
     let living_variants = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 sums_variants in
     let living_ancestors = Array.fold_left (fun a i -> if i > 0 then a + 1 else a) 0 sums_ancestors in
 
-    Graph.add_point 0 (sum_size#get_value () /. 10.0 |> truncate);
+    Graph.add_point 0 (sum_size#get_value () /. 100.0 |> truncate);
     Graph.add_point 1 (terrain#get_total_food () /. 5000.0 |> truncate);
     Graph.add_point 2 (avg_fitness#get_value () *. 50.0 |> truncate);
-    (*Graph.add_point 3 (avg_energy#get_value () |> truncate);*)
-    Graph.add_point 3 (living_variants / 4);
-    Graph.add_point 4 (truncate numcreatsf / 2);
+    Graph.add_point 3 (living_variants / 8);
+    Graph.add_point 4 (truncate numcreatsf / 100);
     Graph.add_point 5 (avg_creat_food#get_value () |> truncate);
 
     if tick mod draw_rate == 0 then begin
