@@ -181,13 +181,20 @@ end
 
 
 
+let generate_max_capacity () =
+  if Random.float 1.0 < 0.1 then
+    (Random.float 1.0) ** 3.0 *. 40.0
+  else
+    0.0
+
+
 class tile = object (_self)
   val mutable food = 10.0 *. (Random.float 1.0) ** 10.0
   (*val mutable food = 10.0*)
 
-  val growth_rate = 0.01
-  val max_feed_factor = 4.0
-  val max_capacity = (Random.float 1.0) ** 3.0 *. 40.0
+  (*val growth_rate = 0.01*)
+  val max_feed_factor = 2.0
+  val max_capacity = generate_max_capacity ()
 
   initializer
     food <- max_capacity
@@ -197,9 +204,9 @@ class tile = object (_self)
     food <- food -. actual_amount;
     actual_amount
 
-  method timeslice tick =
+  method timeslice tick growth_rate =
     let rate = normal_modifier 2 growth_rate 0.5 in
-    let newfood = food +. food *. rate *. (1.0 +. 1.0 *. sin (float_of_int tick)) +. Random.float 0.1 in
+    let newfood = food +. food *. rate *. (1.0 +. 1.0 *. sin (float_of_int tick)) +. Random.float growth_rate in
     food <- min max_capacity newfood
 
   method get_food () =
@@ -215,11 +222,23 @@ end
 class terrain size_x size_y = object (self)
   val width = size_x
   val height = size_y
+
+  val mutable growth_rate = 0.01
+
   val mutable total_food = 0.0
   val mutable tiles: tile array array = [| |]
 
   initializer
     tiles <- Array.init width (fun _ -> Array.init height (fun _ -> new tile))
+
+  method get_growth_rate () =
+    growth_rate
+
+  method inc_growth_rate () =
+    growth_rate <- growth_rate *. 2.0
+
+  method dec_growth_rate () =
+    growth_rate <- growth_rate /. 2.0
 
   method get_sizef () =
     (float_of_int width, float_of_int height)
@@ -237,7 +256,7 @@ class terrain size_x size_y = object (self)
       for j = 0 to (Array.length subtiles) - 1 do
         let tile = Array.get subtiles j in
         total_food <- total_food +. tile#get_food ();
-        tile#timeslice tick
+        tile#timeslice tick growth_rate
       done
     done
 
@@ -245,7 +264,8 @@ class terrain size_x size_y = object (self)
     Graph.clear_grid width height;
     let f i j =
       let tile = self#get_tile (i, j) in
-      let food = (int_of_float (tile#get_food () /. tile#get_max_capacity () *. 255.0)) in
+      let max_food = tile#get_max_capacity () in
+      let food = if max_food > 0.0 then (int_of_float (tile#get_food () /. max_food *. 255.0)) else 0 in
       (0, 0, food)
     in
     Graph.draw_grid width height f
@@ -268,6 +288,9 @@ let sigmoid_mat a =
 
 let sin_mat a =
   Owl.Mat.map (fun x -> sin x) a
+
+let tanh_mat a =
+  Owl.Mat.map (fun x -> tanh x) a
 
 let relu_mat a =
   Owl.Mat.map (fun x -> if x > 0.0 then x else 0.0) a
@@ -317,7 +340,10 @@ class creature_brain = object (self)
 
   method alter () =
     let modify x =
-      x +. ((Random.float 2.0) -. 1.0) ** 3.0
+      if Random.float 1.0 < 0.01 then
+        x +. ((Random.float 2.0) -. 1.0) ** 3.0
+      else
+        x
     in
     layers <- List.map (fun (w, b, a) -> Owl.Mat.( (map modify w, map modify b, a) )) layers
 
@@ -343,7 +369,7 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
   val mutable state = Eating
   val mutable size = size
   val mutable energy = energy
-  val mutable direction = 0.0
+  val mutable direction = Random.float (2.0 *. pi)
   val mutable speed = 1.0
   val mutable brain =
     match brain with
@@ -351,17 +377,18 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     | None -> new creature_brain
 
   (* Parameters *)
-  val metabolism_rest = 0.10
-  val metabolism_eating = 0.15
-  val metabolism_walking = 0.3
+  val metabolism_rest = 0.15
+  val metabolism_eating = 0.2
+  val metabolism_walking = 0.8
   val digest_efficiency = 1.0
-  val feed_factor = 0.4
-  val growth_factor = 0.1
-  val energy_capacity_factor = 10.0
-  val size_decrease_factor = 0.5
+  val feed_factor = 0.3
+  val growth_factor = 0.2
+  val energy_capacity_factor = 6.0
+  val size_decrease_factor = 1.0
 
   (* Stats *)
   val mutable total_eaten = 0.0
+  val mutable total_moved = 0.0
   val mutable divisions = 0
   val mutable variant = variant
 
@@ -406,6 +433,7 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
 
   method walk (terrain:terrain) =
     let (width, height) = terrain#get_sizef () in
+    total_moved <- total_moved +. speed;
     let nx = wrap_to_float ((speed *. cos direction) +. x) width in
     let ny = wrap_to_float ((speed *. sin direction) +. y) height in
     (*Printf.printf "creature %d walked from (%f, %f) to (%f, %f)\n" id x y nx ny;*)
@@ -443,17 +471,18 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
   method select_action (terrain:terrain) =
     let x = self#get_inputs_vector terrain in
     let r = brain#infer x in
+    (*Owl.Mat.print r;*)
 
     let (eat, walk, rest, turnl, turnr, sp) = Owl.Mat.( (get r 0 0, get r 1 0, get r 2 0, get r 3 0, get r 4 0, get r 5 0) ) in
-    if eat > walk && eat > rest && eat > 0.3 then
+    if eat > walk && eat > rest && eat > 0.5 then
       Eating
-    else if walk > rest && walk > 0.4 then begin
+    else if walk > rest && walk > 0.5 then begin
       (*direction <- direction +. (normal ~m:(pi *. 0.25) 2);*)
       if turnl > turnr && turnl > 0.5 then
-        direction <- direction +. 0.1
+        direction <- direction +. 0.25
       else if turnr > 0.5 then
-        direction <- direction +. 0.1;
-      speed <- sp *. 2.0;
+        direction <- direction +. 0.25;
+      speed <- sp *. 1.5;
       Walking
     end
     else
@@ -498,10 +527,10 @@ class creature ?(brain:creature_brain option) (parent:int) (ancestor:int) (size:
     state <- self#select_action terrain;
 
     (*Printf.printf "creature %d is size %f and energy is %f; tile is %f; fitness is %f/%f\n" id size energy (tile#get_food ()) (self#fitness ()) avg_fitness;*)
-    if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && self#fitness () > avg_fitness then
+    if size /. 2.0 > 0.75 && energy /. 2.0 > 0.75 && self#fitness () > avg_fitness then
     (*if size /. 2.0 > 1.0 && energy /. 2.0 > 1.0 && Random.float 1.0 >= 0.95 then*)
       Divide
-    else if size < 0.5 then
+    else if size < 0.75 then
       self#die ()
     else
       Live
@@ -558,7 +587,7 @@ class world size_x size_y = object (self)
   val mutable total_creatures = 0
   val mutable creatures: creature list = [ ]
 
-  val initial_creatures = 1000
+  val initial_creatures = 4000
   val mutable draw_rate = 10
 
 
@@ -611,6 +640,7 @@ class world size_x size_y = object (self)
       Graph.print (Printf.sprintf "d/dt Population: %d" (population#get_diff () |> int_of_float));
       Graph.print (Printf.sprintf "d/dt Size: %f" (sum_size#get_diff ()));
       Graph.print (Printf.sprintf "Avg Size: %f" (sum_size#get_value () /. numcreatsf));
+      Graph.print (Printf.sprintf "Total Food: %f" (terrain#get_total_food ()));
       Graph.print (Printf.sprintf "Living Variants: %d/%d" living_variants (get_current_col ()));
       Graph.print (Printf.sprintf "Ancestery: %d" living_ancestors);
 
@@ -622,6 +652,9 @@ class world size_x size_y = object (self)
         top10 := !top10 + n
       done;
       Graph.print (Printf.sprintf "Top 10 / Total: %f" (float_of_int !top10 /. numcreatsf));
+
+      Graph.print "";
+      Graph.print (Printf.sprintf "Food Growth Rate: %f" (terrain#get_growth_rate ()));
   end
 
   method sorted_variants () =
@@ -710,6 +743,8 @@ class world size_x size_y = object (self)
 
   method process_key () =
     match Graph.get_key_press () with
+    | 'f' -> terrain#inc_growth_rate ()
+    | 'F' -> terrain#dec_growth_rate ()
     | 'k' -> self#kill_most ()
     | 's' -> self#save_all ()
     | 'p' -> pause <- not pause
